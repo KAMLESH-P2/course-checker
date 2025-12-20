@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pdfplumber
 from datetime import datetime, time
@@ -226,8 +227,8 @@ if uploaded_file:
             st.caption(f"Credits: {first_course.credits}")
             
             # Show all sections in a table-like format
-            for course in course_sections:
-                checkbox_key = f"{course.code}_{course.section}"
+            for idx, course in enumerate(course_sections):
+                checkbox_key = f"{course.code}_{course.section}_{idx}_{course.instructor}"
                 
                 col1, col2, col3 = st.columns([1, 2, 3])
                 
