@@ -371,29 +371,29 @@ else:
 with st.sidebar:
     st.header("✨ Automatic Scheduling")
     st.write("""
-    This tool **automatically** finds a schedule with:
-    
-    ✅ No time conflicts
-    ✅ Your preferred teachers
-    ✅ All your selected courses
-    
-    Just select what you want, and we do the rest!
+This tool automatically finds a schedule with:
+
+✅ No time conflicts
+✅ Your preferred teachers
+✅ All your selected courses
+
+Just select what you want, and we do the rest!
     """)
     
     st.divider()
     
     st.header("🎯 How It Works")
     st.write("""
-    The system tries all possible combinations of course sections and finds one where no classes overlap.
-    
-    If no schedule is possible, you'll be told which courses conflict.
+The system tries all possible combinations of course sections and finds one where no classes overlap.
+
+If no schedule is possible, you will be told which courses conflict.
     """)
     
     st.divider()
     
     st.header("💡 Tips")
     st.write("""
-    - Select all teachers initially
-    - If no schedule found, try deselecting some teachers
-    - You can also remove a course and try again
-    ""
+- Select all teachers initially
+- If no schedule found, try deselecting some teachers
+- You can also remove a course and try again
+    """)
