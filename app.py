@@ -194,8 +194,41 @@ if uploaded_file:
         if selected_course_codes:
             st.success(f"Selected {len(selected_course_codes)} courses")
             
-            # Step 2: Select Teachers
-            st.header("Step 2: Select Preferred Teachers (Optional)")
+            # Step 2: Select Leave Days
+            st.header("Step 2: Select Leave Days (Optional)")
+            st.write("Choose days you want off - no classes will be scheduled on these days.")
+            
+            leave_days = []
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Select Days Off:**")
+                if st.checkbox("Monday", key="leave_monday"):
+                    leave_days.append("Monday")
+                if st.checkbox("Tuesday", key="leave_tuesday"):
+                    leave_days.append("Tuesday")
+                if st.checkbox("Wednesday", key="leave_wednesday"):
+                    leave_days.append("Wednesday")
+                if st.checkbox("Thursday", key="leave_thursday"):
+                    leave_days.append("Thursday")
+            
+            with col2:
+                st.write("** **")  # Spacer
+                if st.checkbox("Friday", key="leave_friday"):
+                    leave_days.append("Friday")
+                if st.checkbox("Saturday", key="leave_saturday"):
+                    leave_days.append("Saturday")
+                if st.checkbox("Sunday", key="leave_sunday"):
+                    leave_days.append("Sunday")
+            
+            if leave_days:
+                st.info(f"🏖️ Days off: {', '.join(leave_days)}")
+            else:
+                st.success("✅ No leave days - all days available for classes")
+            
+            # Step 3: Select Teachers
+            st.header("Step 3: Select Preferred Teachers (Optional)")
             st.write("Choose teachers for each course. Leave blank to consider all teachers.")
             
             teacher_preferences = {}
@@ -219,17 +252,29 @@ if uploaded_file:
                     if selected_teachers:
                         teacher_preferences[code] = selected_teachers
             
-            # Step 3: Generate Schedule
-            st.header("Step 3: Generate Your Schedule")
+            # Step 4: Generate Schedule
+            st.header("Step 4: Generate Your Schedule")
             
             if st.button("🎯 Generate Conflict-Free Schedule", type="primary", use_container_width=True):
                 
                 with st.spinner("Finding the best schedule for you..."):
-                    # Filter sections based on teacher preferences
+                    # Filter sections based on teacher preferences AND leave days
                     filtered_sections = {}
                     for code in selected_course_codes:
                         filtered_sections[code] = []
                         for course in courses_by_code[code]:
+                            # Check if course has classes on leave days
+                            has_class_on_leave = False
+                            if leave_days:
+                                for slot in course.schedule:
+                                    if slot['day'] in leave_days:
+                                        has_class_on_leave = True
+                                        break
+                            
+                            # Skip this section if it has classes on leave days
+                            if has_class_on_leave:
+                                continue
+                            
                             # If teacher preferences exist, filter by them
                             if code in teacher_preferences:
                                 if course.instructor in teacher_preferences[code]:
@@ -329,7 +374,9 @@ if uploaded_file:
                         st.error("❌ **Could Not Find a Conflict-Free Schedule**")
                         st.write("**Possible reasons:**")
                         st.write("• Your selected courses/teachers have unavoidable conflicts")
+                        st.write("• Your leave days make it impossible to fit all courses")
                         st.write("• Try selecting different teachers")
+                        st.write("• Try reducing leave days")
                         st.write("• Try removing some courses")
                         
                         st.write("---")
@@ -363,9 +410,10 @@ else:
     st.write("### How It Works:")
     st.write("1. 📤 Upload your PDF timetable")
     st.write("2. ✅ Select courses you want to take")
-    st.write("3. 👤 Choose preferred teachers (optional)")
-    st.write("4. 🎯 Click 'Generate' - we'll find a conflict-free schedule automatically!")
-    st.write("5. 📥 Download your perfect schedule")
+    st.write("3. 🏖️ Choose days you want off (optional)")
+    st.write("4. 👤 Choose preferred teachers (optional)")
+    st.write("5. 🎯 Click 'Generate' - we'll find a conflict-free schedule automatically!")
+    st.write("6. 📥 Download your perfect schedule")
 
 # Sidebar
 with st.sidebar:
@@ -375,6 +423,7 @@ This tool automatically finds a schedule with:
 
 ✅ No time conflicts
 ✅ Your preferred teachers
+✅ Respects your leave days
 ✅ All your selected courses
 
 Just select what you want, and we do the rest!
@@ -394,6 +443,7 @@ If no schedule is possible, you will be told which courses conflict.
     st.header("💡 Tips")
     st.write("""
 - Select all teachers initially
-- If no schedule found, try deselecting some teachers
-- You can also remove a course and try again
+- Use leave days to get specific days off
+- If no schedule found, try reducing leave days
+- You can also deselect some teachers or remove a course
     """)
