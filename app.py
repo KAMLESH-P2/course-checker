@@ -8,7 +8,7 @@ st.set_page_config(page_title="Course Conflict Checker", page_icon="📚", layou
 
 # Title
 st.title("📚 Course Schedule Conflict Checker")
-st.write("Upload your course timetable PDF to check for conflicts!")
+st.write("Upload your course timetable PDF and select courses without conflicts!")
 
 # Course class
 class Course:
@@ -125,45 +125,68 @@ def extract_courses_from_pdf(pdf_file):
     
     return courses
 
-def check_time_overlap(course1, course2):
-    """Check if two courses have time conflicts"""
-    conflicts = []
+def check_time_overlap(slot1, slot2):
+    """Check if two time slots overlap"""
+    start1 = parse_time(slot1['start'])
+    end1 = parse_time(slot1['end'])
+    start2 = parse_time(slot2['start'])
+    end2 = parse_time(slot2['end'])
     
-    for slot1 in course1.schedule:
-        for slot2 in course2.schedule:
-            if slot1['day'] == slot2['day']:
-                start1 = parse_time(slot1['start'])
-                end1 = parse_time(slot1['end'])
-                start2 = parse_time(slot2['start'])
-                end2 = parse_time(slot2['end'])
-                
-                if all([start1, end1, start2, end2]):
-                    # Check overlap
-                    if start1 < end2 and start2 < end1:
-                        conflicts.append({
-                            'day': slot1['day'],
-                            'time1': f"{slot1['start']}-{slot1['end']}",
-                            'time2': f"{slot2['start']}-{slot2['end']}"
-                        })
-    
-    return conflicts
+    if all([start1, end1, start2, end2]):
+        # Check overlap: slots overlap if start1 < end2 AND start2 < end1
+        return start1 < end2 and start2 < end1
+    return False
 
 def check_all_conflicts(selected_courses):
-    """Check all selected courses for conflicts"""
+    """Check all selected courses for conflicts in real-time"""
     conflicts = []
     
-    for i, course1 in enumerate(selected_courses):
-        for course2 in selected_courses[i+1:]:
-            course_conflicts = check_time_overlap(course1, course2)
-            if course_conflicts:
-                for conflict in course_conflicts:
+    # Build a time slot map
+    time_slots = {}  # {(day, start, end): [courses]}
+    
+    for course in selected_courses:
+        for slot in course.schedule:
+            key = (slot['day'], slot['start'], slot['end'])
+            if key not in time_slots:
+                time_slots[key] = []
+            time_slots[key].append(course)
+    
+    # Check for exact same time slots
+    for key, courses_in_slot in time_slots.items():
+        if len(courses_in_slot) > 1:
+            day, start, end = key
+            for i in range(len(courses_in_slot)):
+                for j in range(i + 1, len(courses_in_slot)):
                     conflicts.append({
-                        'course1': course1,
-                        'course2': course2,
-                        'day': conflict['day'],
-                        'time1': conflict['time1'],
-                        'time2': conflict['time2']
+                        'type': 'exact',
+                        'course1': courses_in_slot[i],
+                        'course2': courses_in_slot[j],
+                        'day': day,
+                        'time': f"{start} - {end}"
                     })
+    
+    # Check for overlapping time slots
+    for i, course1 in enumerate(selected_courses):
+        for j in range(i + 1, len(selected_courses)):
+            course2 = selected_courses[j]
+            
+            for slot1 in course1.schedule:
+                for slot2 in course2.schedule:
+                    if slot1['day'] == slot2['day']:
+                        if check_time_overlap(slot1, slot2):
+                            # Check if not already added as exact match
+                            is_exact = (slot1['start'] == slot2['start'] and 
+                                       slot1['end'] == slot2['end'])
+                            
+                            if not is_exact:
+                                conflicts.append({
+                                    'type': 'overlap',
+                                    'course1': course1,
+                                    'course2': course2,
+                                    'day': slot1['day'],
+                                    'time1': f"{slot1['start']} - {slot1['end']}",
+                                    'time2': f"{slot2['start']} - {slot2['end']}"
+                                })
     
     return conflicts
 
@@ -177,141 +200,224 @@ if uploaded_file:
     if courses:
         st.success(f"✅ Found {len(courses)} course sections!")
         
-        # Group courses by code for better display
+        # Create a session state to track selections
+        if 'selected_courses' not in st.session_state:
+            st.session_state.selected_courses = []
+        
+        # Display courses in a clean table format
+        st.subheader("📋 Available Courses")
+        
+        # Group courses by code
         courses_by_code = {}
         for course in courses:
             if course.code not in courses_by_code:
                 courses_by_code[course.code] = []
             courses_by_code[course.code].append(course)
         
-        # Display courses with checkboxes
-        st.subheader("📋 Select Your Course Sections")
-        st.info("💡 Each course may have multiple sections with different times. Select ONE section per course.")
-        
         selected_courses = []
         
+        # Display as simple list
         for code in sorted(courses_by_code.keys()):
             course_sections = courses_by_code[code]
+            first_course = course_sections[0]
             
-            with st.expander(f"**{code}** - {course_sections[0].name} ({course_sections[0].credits} credits) - {len(course_sections)} sections"):
-                for course in course_sections:
-                    col1, col2 = st.columns([3, 1])
-                    
-                    with col1:
-                        checkbox_key = f"{course.code}_{course.section}"
-                        selected = st.checkbox(
-                            f"**Section {course.section}** - {course.instructor}",
-                            key=checkbox_key
-                        )
-                        
-                        # Show schedule
-                        schedule_text = ""
-                        for slot in course.schedule:
-                            schedule_text += f"  • {slot['day']}: {slot['start']}-{slot['end']}\n"
-                        
-                        st.text(schedule_text)
-                        st.caption(f"📅 {course.dates}")
-                        
-                        if selected:
-                            selected_courses.append(course)
+            st.write("---")
+            st.subheader(f"{code} - {first_course.name}")
+            st.caption(f"Credits: {first_course.credits}")
+            
+            # Show all sections in a table-like format
+            for course in course_sections:
+                checkbox_key = f"{course.code}_{course.section}"
                 
-                st.divider()
-        
-        # Check for conflicts
-        if selected_courses:
-            st.divider()
-            st.subheader(f"✅ Selected: {len(selected_courses)} course sections")
-            
-            # Show selected courses
-            total_credits = sum(c.credits for c in selected_courses)
-            st.metric("Total Credits", total_credits)
-            
-            if st.button("🔍 Check for Conflicts", type="primary", use_container_width=True):
-                conflicts = check_all_conflicts(selected_courses)
+                col1, col2, col3 = st.columns([1, 2, 3])
                 
-                if conflicts:
-                    st.error(f"⚠️ Found {len(conflicts)} time conflict(s)!")
-                    
-                    for conflict in conflicts:
-                        c1 = conflict['course1']
-                        c2 = conflict['course2']
-                        
-                        st.warning(
-                            f"**⚠️ TIME CONFLICT on {conflict['day']}:**\n\n"
-                            f"**{c1.code}** (Section {c1.section}) - {conflict['time1']}\n\n"
-                            f"**{c2.code}** (Section {c2.section}) - {conflict['time2']}\n\n"
-                            f"These two sections overlap!"
-                        )
-                else:
-                    st.success("✅ No conflicts found! Your schedule looks good!")
-                    
-                    # Show weekly schedule summary
-                    st.subheader("📅 Your Weekly Schedule")
-                    
-                    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-                    
-                    for day in days:
-                        day_schedule = []
-                        for course in selected_courses:
-                            for slot in course.schedule:
-                                if slot['day'] == day:
-                                    day_schedule.append((slot['start'], slot['end'], course))
-                        
-                        if day_schedule:
-                            day_schedule.sort(key=lambda x: x[0])
-                            st.write(f"**{day}:**")
-                            for start, end, course in day_schedule:
-                                st.write(f"  • {start}-{end}: {course.code} ({course.section}) - {course.name}")
-                    
-                    # Download schedule option
-                    schedule_text = "MY COURSE SCHEDULE\n" + "="*50 + "\n\n"
-                    for course in selected_courses:
-                        schedule_text += f"{course.code} - {course.name}\n"
-                        schedule_text += f"Section: {course.section} | Instructor: {course.instructor}\n"
-                        schedule_text += f"Credits: {course.credits}\n"
-                        for slot in course.schedule:
-                            schedule_text += f"  {slot['day']}: {slot['start']}-{slot['end']}\n"
-                        schedule_text += "\n"
-                    
-                    st.download_button(
-                        label="📥 Download Schedule",
-                        data=schedule_text,
-                        file_name="my_schedule.txt",
-                        mime="text/plain"
+                with col1:
+                    is_selected = st.checkbox(
+                        f"**{course.section}**",
+                        key=checkbox_key
                     )
+                
+                with col2:
+                    st.write(f"👤 **{course.instructor}**")
+                
+                with col3:
+                    # Format schedule nicely
+                    schedule_by_day = {}
+                    for slot in course.schedule:
+                        day = slot['day']
+                        time_str = f"{slot['start']}-{slot['end']}"
+                        if day not in schedule_by_day:
+                            schedule_by_day[day] = []
+                        schedule_by_day[day].append(time_str)
+                    
+                    schedule_text = " | ".join([f"{day}: {', '.join(times)}" 
+                                               for day, times in schedule_by_day.items()])
+                    st.write(f"🕐 {schedule_text}")
+                
+                if is_selected:
+                    selected_courses.append(course)
+        
+        # Real-time conflict checking
+        st.write("---")
+        
+        if selected_courses:
+            st.subheader(f"✅ You Selected {len(selected_courses)} Course Sections")
+            
+            # Calculate total credits
+            total_credits = sum(c.credits for c in selected_courses)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total Courses", len(selected_courses))
+            with col2:
+                st.metric("Total Credits", total_credits)
+            
+            # Check for conflicts automatically
+            conflicts = check_all_conflicts(selected_courses)
+            
+            if conflicts:
+                st.error(f"⚠️ **ALERT: {len(conflicts)} TIME CONFLICT(S) DETECTED!**")
+                
+                for idx, conflict in enumerate(conflicts, 1):
+                    c1 = conflict['course1']
+                    c2 = conflict['course2']
+                    
+                    if conflict['type'] == 'exact':
+                        st.error(
+                            f"**Conflict #{idx}: Same Time Slot!**\n\n"
+                            f"❌ **{c1.code}** (Section {c1.section}) - {c1.instructor}\n\n"
+                            f"❌ **{c2.code}** (Section {c2.section}) - {c2.instructor}\n\n"
+                            f"Both classes are on **{conflict['day']} at {conflict['time']}**\n\n"
+                            f"👉 Please choose a different section for one of these courses!"
+                        )
+                    else:
+                        st.warning(
+                            f"**Conflict #{idx}: Overlapping Times!**\n\n"
+                            f"⚠️ **{c1.code}** (Section {c1.section}): {conflict['day']} {conflict['time1']}\n\n"
+                            f"⚠️ **{c2.code}** (Section {c2.section}): {conflict['day']} {conflict['time2']}\n\n"
+                            f"These classes overlap on **{conflict['day']}**\n\n"
+                            f"👉 Choose different sections to avoid this conflict!"
+                        )
+                
+            else:
+                st.success("✅ **NO CONFLICTS! Your schedule is perfect!**")
+                
+                # Show weekly timetable
+                st.subheader("📅 Your Weekly Timetable")
+                
+                days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                
+                for day in days:
+                    day_schedule = []
+                    for course in selected_courses:
+                        for slot in course.schedule:
+                            if slot['day'] == day:
+                                day_schedule.append({
+                                    'start': slot['start'],
+                                    'end': slot['end'],
+                                    'course': course
+                                })
+                    
+                    if day_schedule:
+                        # Sort by start time
+                        day_schedule.sort(key=lambda x: x['start'])
+                        
+                        st.write(f"### {day}")
+                        for item in day_schedule:
+                            st.write(
+                                f"🕐 **{item['start']} - {item['end']}** | "
+                                f"{item['course'].code} ({item['course'].section}) - "
+                                f"{item['course'].name} | "
+                                f"👤 {item['course'].instructor}"
+                            )
+                        st.write("")
+                
+                # Summary list
+                st.subheader("📝 Selected Courses Summary")
+                
+                for course in selected_courses:
+                    with st.expander(f"{course.code} - {course.name} (Section {course.section})"):
+                        st.write(f"**Instructor:** {course.instructor}")
+                        st.write(f"**Credits:** {course.credits}")
+                        st.write(f"**Dates:** {course.dates}")
+                        st.write("**Schedule:**")
+                        for slot in course.schedule:
+                            st.write(f"  • {slot['day']}: {slot['start']} - {slot['end']}")
+                
+                # Download option
+                schedule_text = "MY COURSE SCHEDULE\n" + "="*60 + "\n\n"
+                schedule_text += f"Total Courses: {len(selected_courses)}\n"
+                schedule_text += f"Total Credits: {total_credits}\n\n"
+                
+                for course in selected_courses:
+                    schedule_text += f"{course.code} - {course.name}\n"
+                    schedule_text += f"Section: {course.section}\n"
+                    schedule_text += f"Instructor: {course.instructor}\n"
+                    schedule_text += f"Credits: {course.credits}\n"
+                    schedule_text += "Schedule:\n"
+                    for slot in course.schedule:
+                        schedule_text += f"  {slot['day']}: {slot['start']} - {slot['end']}\n"
+                    schedule_text += "\n"
+                
+                st.download_button(
+                    label="📥 Download Your Schedule",
+                    data=schedule_text,
+                    file_name="my_course_schedule.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+        
         else:
-            st.info("👆 Select course sections above to check for conflicts")
+            st.info("👆 **Select course sections above** by checking the boxes")
+            st.write("- Choose ONE section per course")
+            st.write("- Conflicts will be detected automatically")
+            st.write("- You'll see alerts if there are any time clashes")
             
     else:
-        st.warning("⚠️ Couldn't extract courses from PDF. Please make sure it's the correct format.")
+        st.warning("⚠️ Couldn't extract courses from PDF.")
 
 else:
-    st.info("👆 Upload your course timetable PDF to get started!")
+    st.info("👆 **Upload your course timetable PDF to get started!**")
     
     st.write("---")
-    st.write("**How it works:**")
-    st.write("1. Upload your PDF timetable")
-    st.write("2. Expand each course to see available sections")
-    st.write("3. Select ONE section per course")
-    st.write("4. Click 'Check for Conflicts' to see if your selections overlap")
+    st.write("### How It Works:")
+    st.write("1. 📤 Upload your PDF timetable")
+    st.write("2. 📋 Browse courses organized by course code")
+    st.write("3. ✅ Select ONE section for each course you want")
+    st.write("4. ⚠️ Get instant alerts if there are time conflicts")
+    st.write("5. 📥 Download your final schedule when conflict-free!")
 
 # Sidebar
 with st.sidebar:
-    st.header("ℹ️ About")
+    st.header("ℹ️ About This Tool")
     st.write("""
-    This tool helps you:
-    - View all available course sections
-    - Select your preferred sections
-    - Detect time conflicts automatically
-    - Download your final schedule
+    This tool helps you build a conflict-free course schedule by:
+    
+    ✅ Detecting exact time conflicts
+    ✅ Detecting overlapping class times
+    ✅ Showing clear alerts when conflicts exist
+    ✅ Organizing your weekly timetable
+    """)
+    
+    st.divider()
+    
+    st.header("⚠️ Conflict Types")
+    st.write("""
+    **Exact Conflict (❌):**
+    Two courses at the exact same time
+    
+    **Overlap Conflict (⚠️):**
+    Two courses with overlapping times
+    
+    Both types mean you cannot take those sections together!
     """)
     
     st.divider()
     
     st.header("💡 Tips")
     st.write("""
-    - Each course may have multiple sections
-    - Select only ONE section per course
+    - Select sections carefully
     - Check for conflicts before finalizing
+    - Try different sections if conflicts occur
     - Download your schedule when ready
     """)
