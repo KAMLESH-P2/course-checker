@@ -2,14 +2,13 @@ import streamlit as st
 import pdfplumber
 from datetime import datetime, time
 import re
-from itertools import product
 
 # Page config
-st.set_page_config(page_title="Auto Course Scheduler", page_icon="📚", layout="wide")
+st.set_page_config(page_title="PDF to Timetable", page_icon="📚", layout="wide")
 
 # Title
-st.title("📚 Automatic Course Scheduler")
-st.write("Select courses and teachers - we'll build a conflict-free schedule for you!")
+st.title("📚 PDF to Timetable Generator")
+st.write("Upload your course PDF and instantly get a formatted timetable!")
 
 # Course class
 class Course:
@@ -111,289 +110,245 @@ def extract_courses_from_pdf(pdf_file):
     
     return courses
 
-def check_time_overlap(slot1, slot2):
-    """Check if two time slots overlap"""
-    start1 = parse_time(slot1['start'])
-    end1 = parse_time(slot1['end'])
-    start2 = parse_time(slot2['start'])
-    end2 = parse_time(slot2['end'])
-    
-    if all([start1, end1, start2, end2]):
-        return start1 < end2 and start2 < end1
-    return False
-
-def has_conflict(course1, course2):
-    """Check if two courses have any time conflict"""
-    for slot1 in course1.schedule:
-        for slot2 in course2.schedule:
-            if slot1['day'] == slot2['day']:
-                if check_time_overlap(slot1, slot2):
-                    return True
-    return False
-
-def find_best_schedule(course_sections_dict):
-    """
-    Automatically find a conflict-free schedule
-    course_sections_dict: {course_code: [list of course objects]}
-    """
-    # Get all possible combinations
-    course_codes = list(course_sections_dict.keys())
-    all_sections = [course_sections_dict[code] for code in course_codes]
-    
-    # Try all combinations
-    for combination in product(*all_sections):
-        # Check if this combination has conflicts
-        has_any_conflict = False
-        for i in range(len(combination)):
-            for j in range(i + 1, len(combination)):
-                if has_conflict(combination[i], combination[j]):
-                    has_any_conflict = True
-                    break
-            if has_any_conflict:
-                break
-        
-        # If no conflicts, return this schedule
-        if not has_any_conflict:
-            return list(combination)
-    
-    return None
-
 # File uploader
-uploaded_file = st.file_uploader("Upload your course timetable (PDF)", type=['pdf'])
+uploaded_file = st.file_uploader("📤 Upload Course PDF", type=['pdf'])
 
 if uploaded_file:
-    with st.spinner("Extracting courses from PDF..."):
-        all_courses = extract_courses_from_pdf(uploaded_file)
+    with st.spinner("📖 Reading PDF and extracting information..."):
+        courses = extract_courses_from_pdf(uploaded_file)
     
-    if all_courses:
-        st.success(f"✅ Found {len(all_courses)} course sections!")
+    if courses:
+        st.success(f"✅ Successfully extracted {len(courses)} course sections!")
         
-        # Group courses by code
+        # Display summary
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.metric("Total Sections", len(courses))
+        
+        with col2:
+            unique_courses = len(set([c.code for c in courses]))
+            st.metric("Unique Courses", unique_courses)
+        
+        st.write("---")
+        
+        # Option 1: View as List
+        st.header("📋 Course List")
+        
+        # Group by course code
         courses_by_code = {}
-        for course in all_courses:
+        for course in courses:
             if course.code not in courses_by_code:
                 courses_by_code[course.code] = []
             courses_by_code[course.code].append(course)
         
-        # Step 1: Select Courses
-        st.header("Step 1: Select Courses")
-        st.write("Choose which courses you want to take:")
-        
-        selected_course_codes = []
-        
-        cols = st.columns(3)
-        for idx, code in enumerate(sorted(courses_by_code.keys())):
-            first_course = courses_by_code[code][0]
-            with cols[idx % 3]:
-                if st.checkbox(
-                    f"**{code}**\n{first_course.name}\n({first_course.credits} credits)",
-                    key=f"course_{code}"
-                ):
-                    selected_course_codes.append(code)
-        
-        if selected_course_codes:
-            st.success(f"Selected {len(selected_course_codes)} courses")
+        for code in sorted(courses_by_code.keys()):
+            sections = courses_by_code[code]
+            first = sections[0]
             
-            # Step 2: Select Teachers
-            st.header("Step 2: Select Preferred Teachers (Optional)")
-            st.write("Choose teachers for each course. Leave blank to consider all teachers.")
+            with st.expander(f"**{code}** - {first.name} ({first.credits} credits) - {len(sections)} sections"):
+                for course in sections:
+                    st.write(f"**Section {course.section}** - 👤 {course.instructor}")
+                    st.caption(f"📅 {course.dates}")
+                    
+                    # Show schedule
+                    schedule_by_day = {}
+                    for slot in course.schedule:
+                        day = slot['day']
+                        time_str = f"{slot['start']}-{slot['end']}"
+                        if day not in schedule_by_day:
+                            schedule_by_day[day] = []
+                        schedule_by_day[day].append(time_str)
+                    
+                    for day, times in schedule_by_day.items():
+                        st.write(f"  • {day}: {', '.join(times)}")
+                    
+                    st.write("")
+        
+        st.write("---")
+        
+        # Option 2: Weekly Timetable View
+        st.header("📅 Weekly Timetable View")
+        st.write("Shows all classes organized by day and time")
+        
+        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        
+        for day in days:
+            # Collect all classes on this day
+            day_classes = []
             
-            teacher_preferences = {}
+            for course in courses:
+                for slot in course.schedule:
+                    if slot['day'] == day:
+                        day_classes.append({
+                            'start': slot['start'],
+                            'end': slot['end'],
+                            'course': course
+                        })
             
-            for code in selected_course_codes:
-                sections = courses_by_code[code]
-                instructors = list(set([s.instructor for s in sections]))
+            if day_classes:
+                # Sort by start time
+                day_classes.sort(key=lambda x: x['start'])
                 
-                with st.expander(f"{code} - {sections[0].name}"):
-                    st.write(f"Available teachers: **{len(instructors)}**")
-                    
-                    selected_teachers = []
-                    for instructor in instructors:
-                        if st.checkbox(
-                            f"👤 {instructor}",
-                            key=f"teacher_{code}_{instructor}",
-                            value=True  # Select all by default
-                        ):
-                            selected_teachers.append(instructor)
-                    
-                    if selected_teachers:
-                        teacher_preferences[code] = selected_teachers
-            
-            # Step 3: Generate Schedule
-            st.header("Step 3: Generate Your Schedule")
-            
-            if st.button("🎯 Generate Conflict-Free Schedule", type="primary", use_container_width=True):
+                st.subheader(f"📆 {day}")
                 
-                with st.spinner("Finding the best schedule for you..."):
-                    # Filter sections based on teacher preferences
-                    filtered_sections = {}
-                    for code in selected_course_codes:
-                        filtered_sections[code] = []
-                        for course in courses_by_code[code]:
-                            # If teacher preferences exist, filter by them
-                            if code in teacher_preferences:
-                                if course.instructor in teacher_preferences[code]:
-                                    filtered_sections[code].append(course)
-                            else:
-                                filtered_sections[code].append(course)
-                    
-                    # Find best schedule
-                    best_schedule = find_best_schedule(filtered_sections)
-                    
-                    if best_schedule:
-                        st.success("✅ **Found a Perfect Schedule!**")
-                        
-                        # Display schedule
-                        st.subheader("📅 Your Generated Timetable")
-                        
-                        # Show selected courses
-                        total_credits = sum(c.credits for c in best_schedule)
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Total Courses", len(best_schedule))
-                        with col2:
-                            st.metric("Total Credits", total_credits)
-                        
-                        st.write("---")
-                        
-                        # Weekly view
-                        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-                        
-                        for day in days:
-                            day_schedule = []
-                            for course in best_schedule:
-                                for slot in course.schedule:
-                                    if slot['day'] == day:
-                                        day_schedule.append({
-                                            'start': slot['start'],
-                                            'end': slot['end'],
-                                            'course': course
-                                        })
-                            
-                            if day_schedule:
-                                day_schedule.sort(key=lambda x: x['start'])
-                                
-                                st.write(f"### {day}")
-                                for item in day_schedule:
-                                    st.info(
-                                        f"🕐 **{item['start']} - {item['end']}**\n\n"
-                                        f"**{item['course'].code}** - {item['course'].name}\n\n"
-                                        f"Section: {item['course'].section} | 👤 {item['course'].instructor}"
-                                    )
-                        
-                        st.write("---")
-                        
-                        # Course details
-                        st.subheader("📚 Course Details")
-                        
-                        for course in best_schedule:
-                            with st.expander(f"{course.code} - {course.name}"):
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.write(f"**Section:** {course.section}")
-                                    st.write(f"**Instructor:** {course.instructor}")
-                                with col2:
-                                    st.write(f"**Credits:** {course.credits}")
-                                    st.write(f"**Dates:** {course.dates}")
-                                
-                                st.write("**Schedule:**")
-                                for slot in course.schedule:
-                                    st.write(f"• {slot['day']}: {slot['start']} - {slot['end']}")
-                        
-                        # Download
-                        schedule_text = "MY AUTO-GENERATED COURSE SCHEDULE\n" + "="*60 + "\n\n"
-                        schedule_text += f"Total Courses: {len(best_schedule)}\n"
-                        schedule_text += f"Total Credits: {total_credits}\n\n"
-                        schedule_text += "COURSES:\n" + "-"*60 + "\n\n"
-                        
-                        for course in best_schedule:
-                            schedule_text += f"{course.code} - {course.name}\n"
-                            schedule_text += f"Section: {course.section}\n"
-                            schedule_text += f"Instructor: {course.instructor}\n"
-                            schedule_text += f"Credits: {course.credits}\n"
-                            schedule_text += "Schedule:\n"
-                            for slot in course.schedule:
-                                schedule_text += f"  {slot['day']}: {slot['start']} - {slot['end']}\n"
-                            schedule_text += "\n"
-                        
-                        st.download_button(
-                            label="📥 Download Your Schedule",
-                            data=schedule_text,
-                            file_name="auto_generated_schedule.txt",
-                            mime="text/plain",
-                            use_container_width=True
-                        )
-                        
-                    else:
-                        st.error("❌ **Could Not Find a Conflict-Free Schedule**")
-                        st.write("**Possible reasons:**")
-                        st.write("• Your selected courses/teachers have unavoidable conflicts")
-                        st.write("• Try selecting different teachers")
-                        st.write("• Try removing some courses")
-                        
-                        st.write("---")
-                        st.write("**Showing all conflicts:**")
-                        
-                        # Show what conflicts exist
-                        for i, code1 in enumerate(selected_course_codes):
-                            for code2 in selected_course_codes[i+1:]:
-                                sections1 = filtered_sections[code1]
-                                sections2 = filtered_sections[code2]
-                                
-                                all_conflict = True
-                                for s1 in sections1:
-                                    for s2 in sections2:
-                                        if not has_conflict(s1, s2):
-                                            all_conflict = False
-                                            break
-                                    if not all_conflict:
-                                        break
-                                
-                                if all_conflict:
-                                    st.warning(f"⚠️ **{code1}** and **{code2}** have conflicts in ALL available sections")
+                for item in day_classes:
+                    st.info(
+                        f"🕐 **{item['start']} - {item['end']}**\n\n"
+                        f"**{item['course'].code}** - {item['course'].name}\n\n"
+                        f"Section: {item['course'].section} | "
+                        f"👤 {item['course'].instructor} | "
+                        f"Credits: {item['course'].credits}"
+                    )
         
-        else:
-            st.info("👆 **Step 1:** Select the courses you want to take")
+        st.write("---")
+        
+        # Option 3: Download Options
+        st.header("📥 Download Timetable")
+        
+        # Generate text format
+        timetable_text = "COURSE TIMETABLE\n" + "="*80 + "\n\n"
+        
+        # By course
+        timetable_text += "ORGANIZED BY COURSE:\n" + "-"*80 + "\n\n"
+        for code in sorted(courses_by_code.keys()):
+            sections = courses_by_code[code]
+            first = sections[0]
+            
+            timetable_text += f"{code} - {first.name} ({first.credits} credits)\n"
+            timetable_text += "-" * 80 + "\n"
+            
+            for course in sections:
+                timetable_text += f"\nSection: {course.section}\n"
+                timetable_text += f"Instructor: {course.instructor}\n"
+                timetable_text += f"Dates: {course.dates}\n"
+                timetable_text += "Schedule:\n"
+                
+                schedule_by_day = {}
+                for slot in course.schedule:
+                    day = slot['day']
+                    time_str = f"{slot['start']}-{slot['end']}"
+                    if day not in schedule_by_day:
+                        schedule_by_day[day] = []
+                    schedule_by_day[day].append(time_str)
+                
+                for day, times in schedule_by_day.items():
+                    timetable_text += f"  {day}: {', '.join(times)}\n"
+                
+                timetable_text += "\n"
+        
+        # By day
+        timetable_text += "\n" + "="*80 + "\n\n"
+        timetable_text += "ORGANIZED BY DAY:\n" + "-"*80 + "\n\n"
+        
+        for day in days:
+            day_classes = []
+            
+            for course in courses:
+                for slot in course.schedule:
+                    if slot['day'] == day:
+                        day_classes.append({
+                            'start': slot['start'],
+                            'end': slot['end'],
+                            'course': course
+                        })
+            
+            if day_classes:
+                day_classes.sort(key=lambda x: x['start'])
+                
+                timetable_text += f"\n{day.upper()}:\n"
+                timetable_text += "-" * 80 + "\n"
+                
+                for item in day_classes:
+                    timetable_text += f"{item['start']}-{item['end']}: "
+                    timetable_text += f"{item['course'].code} ({item['course'].section}) - "
+                    timetable_text += f"{item['course'].name} | "
+                    timetable_text += f"{item['course'].instructor}\n"
+                
+                timetable_text += "\n"
+        
+        # Download buttons
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.download_button(
+                label="📄 Download as Text File",
+                data=timetable_text,
+                file_name="course_timetable.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+        
+        with col2:
+            # CSV format
+            csv_text = "Course Code,Course Name,Section,Instructor,Day,Start Time,End Time,Credits\n"
+            for course in courses:
+                for slot in course.schedule:
+                    csv_text += f"{course.code},{course.name},{course.section},{course.instructor},"
+                    csv_text += f"{slot['day']},{slot['start']},{slot['end']},{course.credits}\n"
+            
+            st.download_button(
+                label="📊 Download as CSV",
+                data=csv_text,
+                file_name="course_timetable.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+    else:
+        st.error("❌ Could not extract course information from PDF")
+        st.write("Please make sure your PDF contains course schedule information in the expected format.")
 
 else:
-    st.info("👆 **Upload your course timetable PDF to get started!**")
+    st.info("👆 **Upload a PDF to get started!**")
     
     st.write("---")
-    st.write("### How It Works:")
-    st.write("1. 📤 Upload your PDF timetable")
-    st.write("2. ✅ Select courses you want to take")
-    st.write("3. 👤 Choose preferred teachers (optional)")
-    st.write("4. 🎯 Click 'Generate' - we'll find a conflict-free schedule automatically!")
-    st.write("5. 📥 Download your perfect schedule")
+    
+    st.write("### What This Tool Does:")
+    st.write("1. 📤 Upload your course timetable PDF")
+    st.write("2. 🤖 Automatically extracts all course information")
+    st.write("3. 📋 Shows courses organized by code")
+    st.write("4. 📅 Shows weekly timetable view")
+    st.write("5. 📥 Download in text or CSV format")
+    
+    st.write("---")
+    
+    st.write("### Example PDF Format:")
+    st.code("""
+19EE305 [3 Credits]
+Course overview
+Basic Electrical Engineering
+
+4H4-2, EEE - LOGESH K
+Date: 25-08-2025 to 18-10-2025
+Monday: 13:00 - 14:00 14:00 - 15:00
+Thursday: 15:00 - 16:00 16:00 - 17:00
+    """, language="text")
 
 # Sidebar
 with st.sidebar:
-    st.header("✨ Automatic Scheduling")
+    st.header("ℹ️ About")
     st.write("""
-    This tool **automatically** finds a schedule with:
-    
-    ✅ No time conflicts
-    ✅ Your preferred teachers
-    ✅ All your selected courses
-    
-    Just select what you want, and we do the rest!
+This tool automatically reads your course timetable PDF and creates organized views of all courses and schedules.
     """)
     
     st.divider()
     
-    st.header("🎯 How It Works")
+    st.header("📊 Features")
     st.write("""
-    The system tries all possible combinations of course sections and finds one where no classes overlap.
-    
-    If no schedule is possible, you'll be told which courses conflict.
+✅ Extracts all course details
+✅ Shows course list view
+✅ Shows weekly timetable view
+✅ Download as text or CSV
+✅ No manual input needed
     """)
     
     st.divider()
     
-    st.header("💡 Tips")
+    st.header("💡 Use Cases")
     st.write("""
-    - Select all teachers initially
-    - If no schedule found, try deselecting some teachers
-    - You can also remove a course and try again
+- Quick overview of all courses
+- Find what's available each day
+- Export to Excel for planning
+- Share with friends
     """)
