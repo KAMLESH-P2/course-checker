@@ -1,505 +1,296 @@
 import streamlit as st
-import plotly.graph_objects as go
-import pandas as pd
-import numpy as np
-import random
-import math
-import time
-from datetime import datetime
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="CAT Autonomous Command", layout="wide", page_icon="🚛")
 
-# Custom CSS for CAT styling
 st.markdown("""
 <style>
-    .stApp {
-        background: linear-gradient(135deg, #1a1a1a 0%, #000000 100%);
-    }
+    .stApp { background: #0d0d0d; }
     .cat-header {
-        background: #ffcd00;
-        padding: 15px 30px;
-        border-radius: 5px;
-        margin-bottom: 20px;
-        color: #000;
+        background: #ffcd00; padding: 12px 28px;
+        border-radius: 5px; margin-bottom: 16px; color: #000;
+        display: flex; align-items: center; justify-content: space-between;
     }
-    .cat-header h1 {
-        margin: 0;
-        font-family: 'Arial Black', sans-serif;
-        display: inline-block;
-    }
-    .stat-box {
-        background: #000;
-        border-left: 4px solid #ffcd00;
-        padding: 15px;
-        margin: 10px 0;
-        border-radius: 5px;
-    }
-    .stat-label {
-        font-size: 0.7rem;
-        color: #ffcd00;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-    .stat-value {
-        font-size: 1.8rem;
-        font-weight: bold;
-        font-family: monospace;
-    }
-    .control-panel {
-        background: #1a1a1a;
-        padding: 20px;
-        border-radius: 10px;
-        border: 1px solid #333;
-    }
-    div.stButton > button {
-        background-color: #ffcd00;
-        color: #000;
-        font-weight: bold;
-        width: 100%;
-    }
+    .cat-header h1 { margin: 0; font-family: 'Arial Black', sans-serif; font-size: 1.6rem; }
+    .badge { background:#000; color:#ffcd00; padding:5px 12px; border-radius:3px; font-size:.8rem; font-weight:bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# ============ HEXAGON CLASS ============
-class Hexagon:
-    def __init__(self, x, y, lane_id, col_id):
-        self.x = x
-        self.y = y
-        self.lane_id = lane_id
-        self.col_id = col_id
-        self.height = 0.0
-        self.locked = False
-        self.dump_count = 0
-        self.id = f"H{lane_id}-{col_id}"
+st.markdown("""
+<div class="cat-header">
+  <h1>🚛 CATERPILLAR ® AUTONOMOUS COMMAND</h1>
+  <span class="badge">SAFE TURNING | COLLISION AVOIDANCE | RIGHT-SIDE FILLING</span>
+</div>
+""", unsafe_allow_html=True)
 
-    def get_color(self):
-        if self.height >= 2.4:
-            return '#cc0000'
-        elif self.height > 0.8:
-            return '#0055ff'
-        else:
-            return '#00cc44'
+col_cfg, col_sim = st.columns([1, 3])
 
-# ============ TRUCK CLASS WITH COLLISION AVOIDANCE ============
-class Truck:
-    def __init__(self, truck_id, start_x, start_y, lane_id):
-        self.id = f"CAT-{truck_id:03d}"
-        self.start_x = start_x
-        self.start_y = start_y
-        self.x = start_x
-        self.y = start_y
-        self.lane_id = lane_id
-        self.status = "IDLE"
-        self.target = None
-        self.progress = 0.0
-        self.loads = 0
-        self.waypoints = []
-        self.waiting = False
-        self.wait_timer = 0
-        self.turning_radius = 25
+with col_cfg:
+    st.markdown("### ⚙️ Configuration")
+    num_trucks     = st.slider("CAT Units", 4, 15, 6)
+    update_ms      = st.slider("Update Speed (ms)", 100, 5000, 300, step=100,
+                               help="Higher = slower/smoother, less CPU")
+    steps_per_tick = st.slider("Steps per tick", 1, 5, 2,
+                               help="Simulation steps computed per update")
+    st.button("🚀 Apply & Restart", type="primary", use_container_width=True)
 
-    def check_collision(self, other_trucks):
-        for other in other_trucks:
-            if other == self or other.status == "IDLE":
-                continue
-            distance = math.sqrt((self.x - other.x)**2 + (self.y - other.y)**2)
-            if distance < 35:
-                return True
-        return False
-
-    def update(self, hexes, all_trucks, stats):
-        if self.check_collision(all_trucks):
-            self.waiting = True
-            self.wait_timer += 1
-            if self.wait_timer > 10:
-                self.waiting = False
-                self.wait_timer = 0
-            return
-        self.waiting = False
-        self.wait_timer = 0
-        if self.status == "IDLE":
-            targets = [h for h in hexes if h.lane_id == self.lane_id and not h.locked and h.height < 2.4]
-            if targets:
-                targets.sort(key=lambda h: h.x, reverse=True)
-                self.target = targets[0]
-                self.target.locked = True
-                self.status = "HAULING"
-                self.progress = 0.0
-                turn_radius = self.turning_radius
-                self.waypoints = [
-                    (self.start_x, self.start_y),
-                    (self.start_x, self.target.y - 15),
-                    (self.target.x - turn_radius, self.target.y - 15),
-                    (self.target.x, self.target.y)
-                ]
-        elif self.status == "HAULING":
-            self.progress += 0.02
-            if len(self.waypoints) >= 4:
-                if self.progress < 0.33:
-                    t = self.progress / 0.33
-                    p1, p2 = self.waypoints[0], self.waypoints[1]
-                    self.x = p1[0] + (p2[0] - p1[0]) * t
-                    self.y = p1[1] + (p2[1] - p1[1]) * t
-                elif self.progress < 0.66:
-                    t = (self.progress - 0.33) / 0.33
-                    p1, p2 = self.waypoints[1], self.waypoints[2]
-                    self.x = p1[0] + (p2[0] - p1[0]) * t
-                    self.y = p1[1] + (p2[1] - p1[1]) * t
-                else:
-                    t = (self.progress - 0.66) / 0.34
-                    p1, p2 = self.waypoints[2], self.waypoints[3]
-                    self.x = p1[0] + (p2[0] - p1[0]) * t
-                    self.y = p1[1] + (p2[1] - p1[1]) * t
-            if self.progress >= 1.0:
-                self.target.height = min(2.5, self.target.height + 0.6)
-                self.target.locked = False
-                self.target.dump_count += 1
-                self.status = "RETURNING"
-                self.progress = 0.0
-                stats['tonnage'] += 400
-                stats['dumps'] += 1
-                self.loads += 1
-                turn_radius = self.turning_radius
-                self.waypoints = [
-                    (self.target.x, self.target.y),
-                    (self.target.x - turn_radius, self.target.y),
-                    (self.start_x, self.target.y),
-                    (self.start_x, self.start_y)
-                ]
-        elif self.status == "RETURNING":
-            self.progress += 0.025
-            if len(self.waypoints) >= 4:
-                if self.progress < 0.33:
-                    t = self.progress / 0.33
-                    p1, p2 = self.waypoints[0], self.waypoints[1]
-                    self.x = p1[0] + (p2[0] - p1[0]) * t
-                    self.y = p1[1] + (p2[1] - p1[1]) * t
-                elif self.progress < 0.66:
-                    t = (self.progress - 0.33) / 0.33
-                    p1, p2 = self.waypoints[1], self.waypoints[2]
-                    self.x = p1[0] + (p2[0] - p1[0]) * t
-                    self.y = p1[1] + (p2[1] - p1[1]) * t
-                else:
-                    t = (self.progress - 0.66) / 0.34
-                    p1, p2 = self.waypoints[2], self.waypoints[3]
-                    self.x = p1[0] + (p2[0] - p1[0]) * t
-                    self.y = p1[1] + (p2[1] - p1[1]) * t
-            if self.progress >= 1.0:
-                self.status = "IDLE"
-                self.x = self.start_x
-                self.y = self.start_y
-                self.target = None
-
-    def get_status_color(self):
-        if self.waiting:
-            return '#ff6600'
-        elif self.status == "HAULING":
-            return '#00ff00'
-        elif self.status == "RETURNING":
-            return '#ffcd00'
-        return '#555555'
-
-# ============ CREATE MAP FIGURE ============
-def create_map_figure(hexes, trucks):
-    fig = go.Figure()
-    fig.add_annotation(
-        x=0.95, y=0.5, xref='paper', yref='paper',
-        text="⬅️ FILLING DIRECTION",
-        showarrow=True, arrowhead=2, arrowsize=1.5,
-        arrowcolor='#ffcd00', arrowwidth=3,
-        font=dict(color='#ffcd00', size=14, family='Arial Black'),
-        bgcolor='rgba(0,0,0,0.7)'
-    )
-    for hex_cell in hexes:
-        points = []
-        for i in range(6):
-            angle_rad = math.radians(60 * i + 30)
-            px = hex_cell.x + 14 * math.cos(angle_rad)
-            py = hex_cell.y + 14 * math.sin(angle_rad)
-            points.append((px, py))
-        color = hex_cell.get_color()
-        if hex_cell.locked:
-            color = '#555555'
-        fig.add_trace(go.Scatter(
-            x=[p[0] for p in points],
-            y=[p[1] for p in points],
-            mode='lines', fill='toself',
-            fillcolor=color,
-            line=dict(color='#333', width=1),
-            showlegend=False,
-            hoverinfo='text',
-            hovertext=f"Lane {hex_cell.lane_id}<br>Height: {hex_cell.height:.2f}m<br>Dumps: {hex_cell.dump_count}"
-        ))
-    for truck in trucks:
-        if truck.status != "IDLE" and truck.target and truck.waypoints:
-            fig.add_trace(go.Scatter(
-                x=[wp[0] for wp in truck.waypoints],
-                y=[wp[1] for wp in truck.waypoints],
-                mode='lines',
-                line=dict(color='#ffcd00', width=2, dash='dot'),
-                showlegend=False,
-                hoverinfo='none'
-            ))
-    for truck in trucks:
-        border_color = truck.get_status_color()
-        fig.add_trace(go.Scatter(
-            x=[truck.x], y=[truck.y],
-            mode='markers',
-            marker=dict(
-                symbol='square', size=32,
-                color='rgba(255,205,0,0.2)',
-                line=dict(color=border_color, width=2)
-            ),
-            showlegend=False
-        ))
-        fig.add_trace(go.Scatter(
-            x=[truck.x], y=[truck.y],
-            mode='markers+text',
-            marker=dict(
-                symbol='square', size=28,
-                color='#ffcd00',
-                line=dict(color=border_color, width=3)
-            ),
-            text=[truck.id.split('-')[1]],
-            textfont=dict(color='#000', size=10, family='Arial Black'),
-            textposition='middle center',
-            showlegend=False,
-            hoverinfo='text',
-            hovertext=f"<b>{truck.id}</b><br>Status: {truck.status}{' (WAITING)' if truck.waiting else ''}<br>Loads: {truck.loads}<br>Lane: {truck.lane_id}"
-        ))
-    fig.update_layout(
-        xaxis=dict(
-            showgrid=False, zeroline=False,
-            fixedrange=True, showticklabels=False,
-            scaleanchor='y', scaleratio=1,
-            range=[200, 950]
-        ),
-        yaxis=dict(
-            showgrid=False, zeroline=False,
-            fixedrange=True, showticklabels=False,
-            range=[0, 650]
-        ),
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        margin=dict(l=0, r=0, t=0, b=0),
-        height=680,
-        dragmode=False,
-        # KEY: uirevision prevents the chart from re-initializing on each update,
-        # which eliminates the blink / white-flash between frames.
-        uirevision='constant'
-    )
-    return fig
-
-# ============ SIMULATION LOOP FRAGMENT (no full-page rerun) ============
-@st.fragment(run_every=0.15)
-def simulation_fragment():
-    """
-    This fragment re-runs every 0.15 s on its own without triggering a
-    full-page rerun, so the sidebar and header never blink.
-    """
-    if not st.session_state.get('initialized') or not st.session_state.get('sim_active'):
-        # Still render current state even when paused
-        if st.session_state.get('initialized'):
-            _render_main_panel()
-        return
-
-    # Advance simulation
-    for _ in range(2):
-        for truck in st.session_state.trucks:
-            truck.update(
-                st.session_state.hexes,
-                st.session_state.trucks,
-                st.session_state.stats
-            )
-
-    _render_main_panel()
-
-
-def _render_main_panel():
-    """Render the chart + fleet table + metrics into the main column area."""
-    hexes  = st.session_state.hexes
-    trucks = st.session_state.trucks
-    stats  = st.session_state.stats
-
-    fig = create_map_figure(hexes, trucks)
-    # use_container_width + uirevision (set in layout) = smooth in-place update
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-
-    with st.expander("📋 LIVE FLEET STATUS", expanded=False):
-        fleet_data = []
-        for truck in trucks:
-            if truck.status == 'HAULING':
-                status_display = '🟡 HAULING → RIGHT'
-            elif truck.status == 'RETURNING':
-                status_display = '🟢 RETURNING'
-            elif truck.waiting:
-                status_display = '🟠 WAITING (Safe Turn)'
-            else:
-                status_display = '⚪ IDLE'
-            target_info = '-'
-            if truck.target and hasattr(truck.target, 'x'):
-                target_info = f"X:{truck.target.x:.0f}"
-            fleet_data.append({
-                'TRUCK':    truck.id,
-                'STATUS':   status_display,
-                'LOADS':    truck.loads,
-                'LANE':     truck.lane_id,
-                'TARGET X': target_info
-            })
-        st.dataframe(pd.DataFrame(fleet_data), use_container_width=True, hide_index=True)
-
-    col_info1, col_info2, col_info3, col_info4 = st.columns(4)
-    with col_info1:
-        st.metric("Filling Direction", "⬅️ RIGHT TO LEFT", delta="Rightmost first")
-    with col_info2:
-        rightmost_empty = len([h for h in hexes if h.height < 2.4 and h.x > 700])
-        st.metric("Right Zone Empty", f"{rightmost_empty}")
-    with col_info3:
-        st.metric("Live Trucks", f"{len([t for t in trucks if t.status != 'IDLE'])}")
-    with col_info4:
-        st.metric("Safe Turns", f"{len([t for t in trucks if t.waiting])}")
-
-    st.caption("🔄 LIVE UPDATES | Safe turning radius: 25px | Collision avoidance distance: 35px")
-
-
-# ============ MAIN APP ============
-def main():
-    if 'initialized' not in st.session_state:
-        st.session_state.initialized = False
-    if 'sim_active' not in st.session_state:
-        st.session_state.sim_active = False
-
-    # ---- Header (rendered once, never blinks) ----
+    st.markdown("---")
     st.markdown("""
-    <div class="cat-header">
-        <h1>CATERPILLAR ®</h1>
-        <span style="float: right; background: #000; color: #ffcd00; padding: 5px 10px; border-radius: 3px;">
-            SAFE TURNING | COLLISION AVOIDANCE | RIGHT-SIDE FILLING
-        </span>
+    <div style='color:#ccc; font-size:.85rem; line-height:2'>
+    <b style='color:#ffcd00'>LEGEND</b><br>
+    🟥 Full (&gt;2.4 m)<br>
+    🟦 Filling<br>
+    🟩 Empty<br>
+    🟨 CAT Truck<br>
+    🟧 Waiting / Safe Turn<br>
     </div>
     """, unsafe_allow_html=True)
 
-    col_side, col_main = st.columns([1, 3])
+# ─── Build self-contained HTML+JS (runs entirely in the browser) ───────────
+HTML = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<style>
+  body  {{ margin:0; background:#111; font-family:monospace; color:#fff; overflow:hidden; }}
+  #stats{{ display:flex; gap:12px; padding:8px 6px; flex-wrap:wrap; }}
+  .stat {{ background:#000; border-left:4px solid #ffcd00; padding:6px 12px; border-radius:4px; min-width:100px; }}
+  .stat-label {{ font-size:.6rem; color:#ffcd00; text-transform:uppercase; letter-spacing:1px; }}
+  .stat-value {{ font-size:1.3rem; font-weight:bold; }}
+  #map  {{ width:100%; height:520px; }}
+  #bar  {{ padding:3px 8px; font-size:.72rem; color:#666; border-top:1px solid #222; }}
+</style>
+</head>
+<body>
 
-    # ---- Sidebar controls (static, never reruns) ----
-    with col_side:
-        st.markdown('<div class="control-panel">', unsafe_allow_html=True)
+<div id="stats">
+  <div class="stat"><div class="stat-label">Material Moved</div><div class="stat-value" id="s-t">0 t</div></div>
+  <div class="stat"><div class="stat-label">Total Dumps</div><div class="stat-value" id="s-d">0</div></div>
+  <div class="stat"><div class="stat-label">Active Trucks</div><div class="stat-value" id="s-a">0</div></div>
+  <div class="stat"><div class="stat-label">Waiting</div><div class="stat-value" id="s-w">0</div></div>
+  <div class="stat"><div class="stat-label">Site Fill</div><div class="stat-value" id="s-f">0%</div></div>
+</div>
+<div id="map"></div>
+<div id="bar">⏳ Initialising…</div>
 
-        if st.session_state.initialized and st.session_state.sim_active:
-            status_text, status_color = "🔥 COLLISION AVOIDANCE ACTIVE", "#00cc44"
-        elif st.session_state.initialized:
-            status_text, status_color = "⏸️ PAUSED", "#ffcd00"
-        else:
-            status_text, status_color = "⚪ STANDBY", "#888"
+<script>
+// ══════════════════════════════════════════════
+// CONFIG  (values injected by Python)
+// ══════════════════════════════════════════════
+const NUM_TRUCKS     = {num_trucks};
+const UPDATE_MS      = {update_ms};
+const STEPS_PER_TICK = {steps_per_tick};
+const HEX_R  = 14;
+const HEX_W  = Math.sqrt(3) * HEX_R;
+const VSPACE = 2 * HEX_R * 0.75;
+const ROWS   = 14, COLS = 20;
+const TURN_R = 25, COLL_DIST = 35;
 
-        st.markdown(f"""
-        <div class="stat-box">
-            <div class="stat-label">FLEET STATUS</div>
-            <div class="stat-value" style="color: {status_color}; font-size: 1.2rem;">{status_text}</div>
-        </div>
-        """, unsafe_allow_html=True)
+// ══════════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════════
+let hexes=[], trucks=[], stats={{tonnage:0,dumps:0}};
 
-        # Live stats placeholders (updated by fragment via session_state)
-        tonnage = st.session_state.get('stats', {}).get('tonnage', 0)
-        dumps   = st.session_state.get('stats', {}).get('dumps', 0)
-        st.markdown(f"""
-        <div class="stat-box">
-            <div class="stat-label">MATERIAL MOVED (TONS)</div>
-            <div class="stat-value">{tonnage:,}</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-label">TOTAL DUMPS</div>
-            <div class="stat-value">{dumps}</div>
-        </div>
-        """, unsafe_allow_html=True)
+function init() {{
+  hexes=[]; trucks=[]; stats={{tonnage:0,dumps:0}};
 
-        st.divider()
-        st.subheader("⚙️ CONFIGURATION")
-        yard_width  = st.number_input("Site Width (M)",  300, 800, 500, 20, key="w")
-        yard_length = st.number_input("Site Length (M)", 250, 600, 400, 20, key="l")
-        num_trucks  = st.number_input("CAT Units (4-15)", 4, 15, 6, 1, key="t")
+  for (let r=0;r<ROWS;r++) {{
+    const lane = Math.floor(r / Math.max(1, Math.floor(ROWS/NUM_TRUCKS)));
+    for (let c=0;c<COLS;c++) {{
+      const xoff = (r%2===1) ? HEX_W/2 : 0;
+      hexes.push({{ x:280+c*HEX_W+xoff, y:80+r*VSPACE,
+                    lane, col:COLS-c, height:0, locked:false, dumps:0 }});
+    }}
+  }}
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🚀 START LIVE", type="primary"):
-                hex_radius   = 15
-                hex_width    = math.sqrt(3) * hex_radius
-                vert_spacing = (2 * hex_radius) * 0.75
-                rows, cols   = 14, 20
-                hexes        = []
-                for r in range(rows):
-                    lane_id = r // max(1, (rows // max(1, num_trucks)))
-                    for c in range(cols):
-                        x_off = (hex_width / 2) if r % 2 == 1 else 0
-                        x_pos = 280 + c * hex_width + x_off
-                        col_from_right = cols - c
-                        hexes.append(Hexagon(x_pos, 80 + r * vert_spacing, lane_id, col_from_right))
-                trucks = []
-                for i in range(num_trucks):
-                    lane_hexes = [h for h in hexes if h.lane_id == i]
-                    if lane_hexes:
-                        avg_y   = sum(h.y for h in lane_hexes) / len(lane_hexes)
-                        start_y = avg_y + (i * 5) - (num_trucks * 2.5)
-                        trucks.append(Truck(i + 1, 250, start_y, i))
-                st.session_state.hexes      = hexes
-                st.session_state.trucks     = trucks
-                st.session_state.stats      = {'tonnage': 0, 'dumps': 0}
-                st.session_state.initialized = True
-                st.session_state.sim_active  = True
-                st.rerun()
+  for (let i=0;i<NUM_TRUCKS;i++) {{
+    const lh = hexes.filter(h=>h.lane===i);
+    const ay = lh.length ? lh.reduce((s,h)=>s+h.y,0)/lh.length : 300;
+    const sy = ay + i*5 - NUM_TRUCKS*2.5;
+    trucks.push({{ id:`CAT-${{String(i+1).padStart(3,'0')}}`,
+                   sx:250, sy, x:250, y:sy, lane:i,
+                   status:'IDLE', target:null, progress:0,
+                   loads:0, wps:[], waiting:false, wt:0 }});
+  }}
+}}
 
-        with col2:
-            if st.button("⏹️ STOP"):
-                st.session_state.sim_active = False
-                st.rerun()
+// ══════════════════════════════════════════════
+// PHYSICS
+// ══════════════════════════════════════════════
+function collides(t) {{
+  for (const o of trucks) {{
+    if (o===t||o.status==='IDLE') continue;
+    const dx=t.x-o.x, dy=t.y-o.y;
+    if (dx*dx+dy*dy < COLL_DIST*COLL_DIST) return true;
+  }}
+  return false;
+}}
 
-        if st.button("🔄 RESET ALL"):
-            for key in ['initialized', 'sim_active', 'hexes', 'trucks', 'stats']:
-                st.session_state.pop(key, None)
-            st.rerun()
+function lerp3(wps, p) {{
+  const seg = p<0.33 ? 0 : p<0.66 ? 1 : 2;
+  const s0  = seg===0?0:seg===1?0.33:0.66;
+  const s1  = seg===0?0.33:seg===1?0.66:1.0;
+  const t   = (p-s0)/(s1-s0);
+  const a=wps[seg], b=wps[seg+1];
+  return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t];
+}}
 
-        st.markdown("---")
+function stepTruck(t) {{
+  if (collides(t)) {{
+    t.waiting=true; t.wt++;
+    if (t.wt>10){{t.waiting=false;t.wt=0;}}
+    return;
+  }}
+  t.waiting=false; t.wt=0;
 
-        if st.session_state.initialized:
-            filled   = len([h for h in st.session_state.hexes if h.height >= 2.4])
-            total    = len(st.session_state.hexes)
-            progress = (filled / total) * 100 if total > 0 else 0
-            st.progress(progress / 100)
-            st.caption(f"📊 SITE FILL: {filled}/{total} ({progress:.1f}%)")
-            active  = len([t for t in st.session_state.trucks if t.status != "IDLE"])
-            waiting = len([t for t in st.session_state.trucks if t.waiting])
-            st.caption(f"🚛 ACTIVE TRUCKS: {active} | ⏳ WAITING: {waiting}")
-            st.info("✅ Safe turning enabled | Collision avoidance active")
+  if (t.status==='IDLE') {{
+    const cands = hexes.filter(h=>h.lane===t.lane&&!h.locked&&h.height<2.4);
+    if (!cands.length) return;
+    cands.sort((a,b)=>b.x-a.x);
+    const tgt=cands[0]; tgt.locked=true;
+    t.target=tgt; t.status='HAULING'; t.progress=0;
+    t.wps=[[t.sx,t.sy],[t.sx,tgt.y-15],[tgt.x-TURN_R,tgt.y-15],[tgt.x,tgt.y]];
 
-        st.markdown("""
-        <div style="margin-top: 20px;">
-            <p style="color:#ffcd00; font-size:12px;">LEGEND</p>
-            <div><span style="background:#cc0000; width:12px; height:12px; display:inline-block;"></span> Full (&gt;2.4m)</div>
-            <div><span style="background:#0055ff; width:12px; height:12px; display:inline-block;"></span> Filling</div>
-            <div><span style="background:#00cc44; width:12px; height:12px; display:inline-block;"></span> Empty</div>
-            <div><span style="background:#ffcd00; width:12px; height:12px; display:inline-block;"></span> CAT Truck</div>
-            <div><span style="background:#ff6600; width:12px; height:12px; display:inline-block;"></span> Waiting/Safe Turn</div>
-            <div><span style="background:transparent; border:1px dashed #ffcd00; width:12px; height:12px; display:inline-block;"></span> Planned Route</div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+  }} else if (t.status==='HAULING') {{
+    t.progress+=0.02;
+    [t.x,t.y]=lerp3(t.wps,Math.min(t.progress,0.9999));
+    if (t.progress>=1) {{
+      const g=t.target;
+      g.height=Math.min(2.5,g.height+0.6); g.locked=false; g.dumps++;
+      stats.tonnage+=400; stats.dumps++; t.loads++;
+      t.status='RETURNING'; t.progress=0;
+      t.wps=[[g.x,g.y],[g.x-TURN_R,g.y],[t.sx,g.y],[t.sx,t.sy]];
+    }}
 
-    # ---- Main panel: simulation fragment runs here ----
-    with col_main:
-        if st.session_state.initialized:
-            simulation_fragment()
-        else:
-            st.info("👈 CONFIGURE SETTINGS & CLICK 'START LIVE'")
-            st.markdown("""
-            <div style="text-align: center; padding: 50px; background: #1a1a1a; border-radius: 10px;">
-                <h2 style="color: #ffcd00;">🚛 CAT AUTONOMOUS COMMAND</h2>
-                <p style="color: #fff;">SAFE TURNING | COLLISION AVOIDANCE SYSTEM</p>
-                <p style="color: #00cc44;">⬅️ DUMPYARD STARTS COMPLETELY EMPTY ⬅️</p>
-                <p style="color: #888;">Trucks fill from RIGHT side | Wide turning arcs | Automatic collision prevention</p>
-                <p style="color: #ffcd00;">⬅️ FILLING DIRECTION: RIGHT → LEFT ⬅️</p>
-            </div>
-            """, unsafe_allow_html=True)
+  }} else if (t.status==='RETURNING') {{
+    t.progress+=0.025;
+    [t.x,t.y]=lerp3(t.wps,Math.min(t.progress,0.9999));
+    if (t.progress>=1) {{
+      t.status='IDLE'; t.x=t.sx; t.y=t.sy; t.target=null;
+    }}
+  }}
+}}
 
+function simStep() {{
+  for (let s=0;s<STEPS_PER_TICK;s++)
+    for (const t of trucks) stepTruck(t);
+}}
 
-if __name__ == "__main__":
-    main()
+// ══════════════════════════════════════════════
+// RENDERING  — Plotly.react() does a diff,
+// so only changed traces are redrawn.
+// uirevision='x' keeps zoom/pan state stable.
+// Result: ZERO full-page flicker.
+// ══════════════════════════════════════════════
+function hexPts(h) {{
+  const xs=[],ys=[];
+  for(let i=0;i<6;i++){{
+    const a=Math.PI/180*(60*i+30);
+    xs.push(h.x+HEX_R*Math.cos(a));
+    ys.push(h.y+HEX_R*Math.sin(a));
+  }}
+  xs.push(xs[0]);ys.push(ys[0]);
+  return {{xs,ys}};
+}}
+
+function hxColor(h) {{
+  if(h.locked)      return '#555';
+  if(h.height>=2.4) return '#cc0000';
+  if(h.height>0.8)  return '#0055ff';
+  return '#00cc44';
+}}
+
+function tkColor(t) {{
+  if(t.waiting)            return '#ff6600';
+  if(t.status==='HAULING') return '#00ff00';
+  if(t.status==='RETURNING') return '#ffcd00';
+  return '#555';
+}}
+
+function buildTraces() {{
+  const tr=[];
+
+  // hexagons
+  for(const h of hexes) {{
+    const {{xs,ys}}=hexPts(h);
+    tr.push({{ x:xs,y:ys,type:'scatter',mode:'lines',fill:'toself',
+               fillcolor:hxColor(h),line:{{color:'#333',width:1}},
+               showlegend:false,hoverinfo:'text',
+               hovertext:`Lane ${{h.lane}}<br>H: ${{h.height.toFixed(2)}}m` }});
+  }}
+
+  // paths
+  for(const t of trucks) {{
+    if(t.status!=='IDLE'&&t.target&&t.wps.length)
+      tr.push({{ x:t.wps.map(w=>w[0]),y:t.wps.map(w=>w[1]),
+                 type:'scatter',mode:'lines',
+                 line:{{color:'#ffcd00',width:1.5,dash:'dot'}},
+                 showlegend:false,hoverinfo:'none' }});
+  }}
+
+  // trucks
+  for(const t of trucks) {{
+    tr.push({{ x:[t.x],y:[t.y],type:'scatter',mode:'markers+text',
+               marker:{{symbol:'square',size:24,color:'#ffcd00',
+                        line:{{color:tkColor(t),width:3}}}},
+               text:[t.id.split('-')[1]],
+               textfont:{{color:'#000',size:9,family:'Arial Black'}},
+               textposition:'middle center',showlegend:false,
+               hoverinfo:'text',
+               hovertext:`<b>${{t.id}}</b><br>${{t.status}}${{t.waiting?' ⚠':''}}<br>Loads: ${{t.loads}}` }});
+  }}
+
+  return tr;
+}}
+
+const LAYOUT={{
+  xaxis:{{showgrid:false,zeroline:false,fixedrange:true,showticklabels:false,
+          scaleanchor:'y',scaleratio:1,range:[200,950]}},
+  yaxis:{{showgrid:false,zeroline:false,fixedrange:true,showticklabels:false,range:[0,650]}},
+  plot_bgcolor:'rgba(0,0,0,0)', paper_bgcolor:'rgba(0,0,0,0)',
+  margin:{{l:0,r:0,t:0,b:0}}, height:520, dragmode:false,
+  uirevision:'x',   // ← KEY: prevents Plotly tearing down the canvas each frame
+  annotations:[{{
+    x:.95,y:.5,xref:'paper',yref:'paper',
+    text:'⬅️ FILLING DIRECTION',showarrow:true,arrowhead:2,
+    arrowsize:1.5,arrowcolor:'#ffcd00',arrowwidth:3,
+    font:{{color:'#ffcd00',size:12,family:'Arial Black'}},
+    bgcolor:'rgba(0,0,0,.7)'
+  }}]
+}};
+
+let inited=false;
+
+function renderFrame() {{
+  const traces=buildTraces();
+  if(!inited) {{
+    Plotly.newPlot('map',traces,LAYOUT,{{displayModeBar:false,responsive:true}});
+    inited=true;
+  }} else {{
+    // react() diffs old vs new traces — no full canvas wipe, no flash
+    Plotly.react('map',traces,LAYOUT,{{displayModeBar:false,responsive:true}});
+  }}
+
+  // stats
+  const filled=hexes.filter(h=>h.height>=2.4).length;
+  document.getElementById('s-t').textContent=stats.tonnage.toLocaleString()+' t';
+  document.getElementById('s-d').textContent=stats.dumps;
+  document.getElementById('s-a').textContent=trucks.filter(t=>t.status!=='IDLE').length;
+  document.getElementById('s-w').textContent=trucks.filter(t=>t.waiting).length;
+  document.getElementById('s-f').textContent=(filled/hexes.length*100).toFixed(1)+'%';
+  document.getElementById('bar').textContent=
+    `🔄 every ${{UPDATE_MS}} ms · ${{STEPS_PER_TICK}} steps/tick · ${{filled}}/${{hexes.length}} cells filled`;
+}}
+
+function tick() {{ simStep(); renderFrame(); }}
+
+init();
+renderFrame();
+setInterval(tick, UPDATE_MS);
+</script>
+</body>
+</html>"""
+
+with col_sim:
+    components.html(HTML, height=670, scrolling=False)
